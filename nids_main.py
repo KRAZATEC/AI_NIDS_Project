@@ -1,130 +1,202 @@
+import streamlit as st
 import pandas as pd
 import numpy as np
-import streamlit as st
 from sklearn.ensemble import RandomForestClassifier
 from sklearn.model_selection import train_test_split
-from sklearn.metrics import accuracy_score
+from sklearn.metrics import confusion_matrix, accuracy_score
+import seaborn as sns
+import matplotlib.pyplot as plt
 
 # -------------------------------
-# Page Config
+# PAGE CONFIG
 # -------------------------------
-st.set_page_config(
-    page_title="AI-Based Network Intrusion Detection System",
-    layout="centered"
-)
+st.set_page_config(page_title="AI NIDS Dashboard", layout="wide")
 
 # -------------------------------
-# Session State
+# SESSION STATE INIT
 # -------------------------------
 if "model" not in st.session_state:
     st.session_state.model = None
-if "accuracy" not in st.session_state:
-    st.session_state.accuracy = None
 
 # -------------------------------
-# Title
+# TITLE
 # -------------------------------
-st.title("AI-Based Network Intrusion Detection System (NIDS)")
-st.write("ML-based Intrusion Detection using CIC-IDS2017 Dataset")
+st.title("AI-Powered Network Intrusion Detection System")
+
+st.markdown("""
+### Project Overview
+This system uses **Machine Learning (Random Forest Algorithm)** to analyze network traffic.
+
+**Classification:**
+- 🟢 Benign (Normal Traffic)
+- 🔴 Malicious (Attack Traffic)
+""")
 
 # -------------------------------
-# Load CSV Data
+# DATA LOADING (SIMULATED)
 # -------------------------------
-@st.cache_data
 @st.cache_data
 def load_data():
+    # Load CIC-IDS2017 CSV
     df = pd.read_csv("Friday-WorkingHours-Afternoon-DDos.pcap_ISCX.csv")
 
-    # Clean column names
+    # Clean column names (very important)
     df.columns = df.columns.str.strip()
 
-    # Convert labels: BENIGN = 0, Attack = 1
-    df["Label"] = df["Label"].apply(lambda x: 0 if x == "BENIGN" else 1)
+    # -------------------------------
+    # Select only required features
+    # -------------------------------
+    required_columns = [
+        "Destination Port",
+        "Flow Duration",
+        "Total Fwd Packets",
+        "Packet Length Mean",
+        "Active Mean",
+        "Label"
+    ]
 
-    # Keep only numeric columns
-    df = df.select_dtypes(include=[np.number])
+    df = df[required_columns]
 
-    # Replace infinite values with NaN
+    # -------------------------------
+    # Rename columns to match model
+    # -------------------------------
+    df.rename(columns={
+        "Destination Port": "Destination_Port",
+        "Flow Duration": "Flow_Duration",
+        "Total Fwd Packets": "Total_Fwd_Packets",
+        "Packet Length Mean": "Packet_Length_Mean",
+        "Active Mean": "Active_Mean"
+    }, inplace=True)
+
+    # -------------------------------
+    # Convert labels: BENIGN = 0, ATTACK = 1
+    # -------------------------------
+    df["Label"] = df["Label"].apply(
+        lambda x: 0 if x == "BENIGN" else 1
+    )
+
+    # -------------------------------
+    # Handle bad values (CRITICAL)
+    # -------------------------------
     df.replace([np.inf, -np.inf], np.nan, inplace=True)
-
-    # Fill NaN values with column median
     df.fillna(df.median(), inplace=True)
 
-    # OPTIONAL (HIGHLY RECOMMENDED): reduce size for Streamlit
+    # -------------------------------
+    # Reduce dataset size for Streamlit
+    # -------------------------------
     df = df.sample(5000, random_state=42)
 
     return df
 
 
-# -------------------------------
-# Train Model
-# -------------------------------
-def train_model(df):
-    X = df.drop("Label", axis=1)
-    y = df["Label"]
-
-    X_train, X_test, y_train, y_test = train_test_split(
-        X, y, test_size=0.2, random_state=42
-    )
-
-    model = RandomForestClassifier(
-        n_estimators=100,
-        random_state=42
-    )
-
-    model.fit(X_train, y_train)
-
-    acc = accuracy_score(y_test, model.predict(X_test))
-    return model, acc, X.columns.tolist()
-
-# -------------------------------
-# Load Data
-# -------------------------------
 df = load_data()
 
-st.subheader("Dataset Preview")
-st.dataframe(df.head())
+# -------------------------------
+# SIDEBAR CONTROLS
+# -------------------------------
+st.sidebar.header("Control Panel")
 
-st.write(f"Total Samples: {df.shape[0]}")
-st.write(f"Total Features: {df.shape[1] - 1}")
+split_size = st.sidebar.slider("Training Data Size (%)", 50, 90, 80)
+n_estimators = st.sidebar.slider("Number of Trees", 10, 200, 100)
 
 # -------------------------------
-# Train Button
+# DATA SPLIT
 # -------------------------------
-if st.button("Train Model Now"):
-    model, acc, feature_names = train_model(df)
-    st.session_state.model = model
-    st.session_state.accuracy = acc
-    st.session_state.features = feature_names
+X = df.drop("Label", axis=1)
+y = df["Label"]
 
-    st.success("✅ Model trained successfully")
-    st.write(f"Model Accuracy: **{acc:.2f}**")
+X_train, X_test, y_train, y_test = train_test_split(
+    X, y,
+    test_size=(100 - split_size) / 100,
+    random_state=42
+)
 
 # -------------------------------
-# Live Prediction
+# MODEL TRAINING
 # -------------------------------
-st.subheader("Live Traffic Prediction")
+st.divider()
+col_train, col_metrics = st.columns([1, 2])
 
-if st.session_state.model is None:
-    st.warning("Train the model first to enable prediction.")
-else:
-    input_data = []
+with col_train:
+    st.subheader("1. Model Training")
 
-    for feature in st.session_state.features:
-        val = st.number_input(feature, value=0.0)
-        input_data.append(val)
+    if st.button("Train Model Now"):
+        with st.spinner("Training Random Forest..."):
+            model = RandomForestClassifier(
+                n_estimators=n_estimators,
+                random_state=42
+            )
+            model.fit(X_train, y_train)
+            st.session_state.model = model
+            st.success("✅ Model trained successfully")
 
-    if st.button("Check Traffic"):
-        sample = np.array([input_data])
-        pred = st.session_state.model.predict(sample)
+    if st.session_state.model is not None:
+        st.info("Model is ready for testing")
 
-        if pred[0] == 1:
-            st.error("🚨 Intrusion Detected (Attack Traffic)")
+# -------------------------------
+# EVALUATION
+# -------------------------------
+with col_metrics:
+    st.subheader("2. Performance Metrics")
+
+    if st.session_state.model is not None:
+        model = st.session_state.model
+        y_pred = model.predict(X_test)
+        acc = accuracy_score(y_test, y_pred)
+
+        m1, m2, m3 = st.columns(3)
+        m1.metric("Accuracy", f"{acc * 100:.2f}%")
+        m2.metric("Total Samples", len(df))
+        m3.metric("Detected Threats", int(np.sum(y_pred)))
+
+        st.write("### Confusion Matrix")
+        cm = confusion_matrix(y_test, y_pred)
+
+        fig, ax = plt.subplots(figsize=(4, 3))
+        sns.heatmap(cm, annot=True, fmt="d", cmap="Reds", ax=ax)
+        ax.set_xlabel("Predicted")
+        ax.set_ylabel("Actual")
+        st.pyplot(fig)
+        plt.close(fig)
+
+    else:
+        st.warning("Train the model to view metrics")
+
+# -------------------------------
+# LIVE TRAFFIC SIMULATOR
+# -------------------------------
+st.divider()
+st.subheader("3. Live Traffic Simulator")
+
+c1, c2, c3, c4 = st.columns(4)
+
+p_dur = c1.number_input("Flow Duration (ms)", 0, 100000, 500)
+p_pkts = c2.number_input("Total Packets", 0, 500, 100)
+p_len = c3.number_input("Packet Length Mean", 0, 1500, 500)
+p_active = c4.number_input("Active Mean Time", 0, 1000, 50)
+
+if st.button("Analyze Packet"):
+    if st.session_state.model is None:
+        st.error("Please train the model first!")
+    else:
+        input_data = np.array([[
+            80,        # Destination_Port (fixed for simulation)
+            p_dur,
+            p_pkts,
+            p_len,
+            p_active
+        ]])
+
+        prediction = st.session_state.model.predict(input_data)
+
+        if prediction[0] == 1:
+            st.error("🚨 MALICIOUS TRAFFIC DETECTED")
+            st.write("**Reason:** High packet volume and abnormal flow duration.")
         else:
-            st.success("✅ Normal Traffic (BENIGN)")
+            st.success("✅ BENIGN TRAFFIC (Safe)")
 
 # -------------------------------
-# Footer
+# FOOTER
 # -------------------------------
 st.markdown("---")
-st.caption("AI-Based NIDS using CIC-IDS2017 Dataset")
+st.caption("AI-Based Network Intrusion Detection System | Streamlit + Random Forest")
