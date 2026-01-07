@@ -3,200 +3,149 @@ import pandas as pd
 import numpy as np
 from sklearn.ensemble import RandomForestClassifier
 from sklearn.model_selection import train_test_split
-from sklearn.metrics import confusion_matrix, accuracy_score
-import seaborn as sns
-import matplotlib.pyplot as plt
+from sklearn.metrics import accuracy_score
+from groq import Groq
+import os
 
-# -------------------------------
-# PAGE CONFIG
-# -------------------------------
-st.set_page_config(page_title="AI NIDS Dashboard", layout="wide")
+# --- PAGE SETUP ---
+st.set_page_config(page_title="AI-NIDS Student Project", layout="wide")
 
-# -------------------------------
-# SESSION STATE INIT
-# -------------------------------
-if "model" not in st.session_state:
-    st.session_state.model = None
-
-# -------------------------------
-# TITLE
-# -------------------------------
-st.title("AI-Powered Network Intrusion Detection System")
-
+st.title("AI-Based Network Intrusion Detection System")
 st.markdown("""
-### Project Overview
-This system uses **Machine Learning (Random Forest Algorithm)** to analyze network traffic.
-
-**Classification:**
-- 🟢 Benign (Normal Traffic)
-- 🔴 Malicious (Attack Traffic)
+**Student Project**: This system uses **Random Forest** to detect Network attacks and **Groq AI** to explain the packets.
 """)
 
-# -------------------------------
-# DATA LOADING (SIMULATED)
-# -------------------------------
+# --- CONFIGURATION ---
+DATA_FILE = "Friday-WorkingHours-Afternoon-DDos.pcap_ISCX.csv"
+
+# --- SIDEBAR: SETTINGS ---
+st.sidebar.header("1. Settings")
+groq_api_key = st.sidebar.text_input("Groq API Key (starts with gsk_)", type="password")
+st.sidebar.caption("[Get a free key here](https://console.groq.com/keys)")
+
+st.sidebar.header("2. Model Training")
+
 @st.cache_data
-def load_data():
-    # Load CIC-IDS2017 CSV
-    df = pd.read_csv("Friday-WorkingHours-Afternoon-DDos.pcap_ISCX.csv")
+def load_data(filepath):
+    try:
+        df = pd.read_csv(filepath, nrows=15000)
+        df.columns = df.columns.str.strip()
+        df.replace([np.inf, -np.inf], np.nan, inplace=True)
+        df.dropna(inplace=True)
+        return df
+    except FileNotFoundError:
+        return None
 
-    # Clean column names (very important)
-    df.columns = df.columns.str.strip()
+def train_model(df):
+    features = ['Flow Duration', 'Total Fwd Packets', 'Total Backward Packets', 
+                'Total Length of Fwd Packets', 'Fwd Packet Length Max', 
+                'Flow IAT Mean', 'Flow IAT Std', 'Flow Packets/s']
+    target = 'Label'
+    
+    missing_cols = [c for c in features if c not in df.columns]
+    if missing_cols:
+        st.error(f"Missing columns in CSV: {missing_cols}")
+        return None, 0, [], None, None
 
-    # -------------------------------
-    # Select only required features
-    # -------------------------------
-    required_columns = [
-        "Destination Port",
-        "Flow Duration",
-        "Total Fwd Packets",
-        "Packet Length Mean",
-        "Active Mean",
-        "Label"
-    ]
+    X = df[features]
+    y = df[target]
+    
+    X_train, X_test, y_train, y_test = train_test_split(X, y, test_size=0.3, random_state=42)
+    
+    clf = RandomForestClassifier(n_estimators=10, max_depth=10, random_state=42)
+    clf.fit(X_train, y_train)
+    
+    score = accuracy_score(y_test, clf.predict(X_test))
+    return clf, score, features, X_test, y_test
 
-    df = df[required_columns]
+# --- APP LOGIC ---
+df = load_data(DATA_FILE)
 
-    # -------------------------------
-    # Rename columns to match model
-    # -------------------------------
-    df.rename(columns={
-        "Destination Port": "Destination_Port",
-        "Flow Duration": "Flow_Duration",
-        "Total Fwd Packets": "Total_Fwd_Packets",
-        "Packet Length Mean": "Packet_Length_Mean",
-        "Active Mean": "Active_Mean"
-    }, inplace=True)
+if df is None:
+    st.error(f"Error: File '{DATA_FILE}' not found. Please upload it to the Files tab.")
+    st.stop()
 
-    # -------------------------------
-    # Convert labels: BENIGN = 0, ATTACK = 1
-    # -------------------------------
-    df["Label"] = df["Label"].apply(
-        lambda x: 0 if x == "BENIGN" else 1
-    )
+st.sidebar.success(f"Dataset Loaded: {len(df)} rows")
 
-    # -------------------------------
-    # Handle bad values (CRITICAL)
-    # -------------------------------
-    df.replace([np.inf, -np.inf], np.nan, inplace=True)
-    df.fillna(df.median(), inplace=True)
+if st.sidebar.button("Train Model Now"):
+    with st.spinner("Training model..."):
+        clf, accuracy, feature_names, X_test, y_test = train_model(df)
+        if clf:
+            st.session_state['model'] = clf
+            st.session_state['features'] = feature_names
+            st.session_state['X_test'] = X_test 
+            st.session_state['y_test'] = y_test
+            st.sidebar.success(f"Training Complete! Accuracy: {accuracy:.2%}")
 
-    # -------------------------------
-    # Reduce dataset size for Streamlit
-    # -------------------------------
-    df = df.sample(5000, random_state=42)
+st.header("3. Threat Analysis Dashboard")
 
-    return df
+if 'model' in st.session_state:
+    col1, col2 = st.columns(2)
+    
+    with col1:
+        st.subheader("Simulation")
+        st.info("Pick a random packet from the test data to simulate live traffic.")
+        
+        if st.button("🎲 Capture Random Packet"):
+            random_idx = np.random.randint(0, len(st.session_state['X_test']))
+            packet_data = st.session_state['X_test'].iloc[random_idx]
+            actual_label = st.session_state['y_test'].iloc[random_idx]
+            
+            st.session_state['current_packet'] = packet_data
+            st.session_state['actual_label'] = actual_label
+            
+    if 'current_packet' in st.session_state:
+        packet = st.session_state['current_packet']
+        
+        with col1:
+            st.write("**Packet Header Info:**")
+            st.dataframe(packet, use_container_width=True)
 
+        with col2:
+            st.subheader("AI Detection Result")
+            prediction = st.session_state['model'].predict([packet])[0]
+            
+            if prediction == "BENIGN":
+                st.success(f" STATUS: **SAFE (BENIGN)**")
+            else:
+                st.error(f"🚨 STATUS: **ATTACK DETECTED ({prediction})**")
+            
+            st.caption(f"Ground Truth Label: {st.session_state['actual_label']}")
 
-df = load_data()
+            st.markdown("---")
+            st.subheader(" Ask AI Analyst (Groq)")
+            
+            if st.button("Generate Explanation"):
+                if not groq_api_key:
+                    st.warning(" Please enter your Groq API Key in the sidebar first.")
+                else:
+                    try:
+                        client = Groq(api_key=groq_api_key)
+                        
+                        prompt = f"""
+                        You are a cybersecurity analyst. 
+                        A network packet was detected as: {prediction}.
+                        
+                        Packet Technical Details:
+                        {packet.to_string()}
+                        
+                        Please explain:
+                        1. Why these specific values (like Flow Duration or Packet Length) might indicate {prediction}.
+                        2. If it is BENIGN, explain why it looks normal.
+                        3. Keep the answer short and simple for a student.
+                        """
 
-# -------------------------------
-# SIDEBAR CONTROLS
-# -------------------------------
-st.sidebar.header("Control Panel")
-
-split_size = st.sidebar.slider("Training Data Size (%)", 50, 90, 80)
-n_estimators = st.sidebar.slider("Number of Trees", 10, 200, 100)
-
-# -------------------------------
-# DATA SPLIT
-# -------------------------------
-X = df.drop("Label", axis=1)
-y = df["Label"]
-
-X_train, X_test, y_train, y_test = train_test_split(
-    X, y,
-    test_size=(100 - split_size) / 100,
-    random_state=42
-)
-
-# -------------------------------
-# MODEL TRAINING
-# -------------------------------
-st.divider()
-col_train, col_metrics = st.columns([1, 2])
-
-with col_train:
-    st.subheader("1. Model Training")
-
-    if st.button("Train Model Now"):
-        with st.spinner("Training Random Forest..."):
-            model = RandomForestClassifier(
-                n_estimators=n_estimators,
-                random_state=42
-            )
-            model.fit(X_train, y_train)
-            st.session_state.model = model
-            st.success("✅ Model trained successfully")
-
-    if st.session_state.model is not None:
-        st.info("Model is ready for testing")
-
-# -------------------------------
-# EVALUATION
-# -------------------------------
-with col_metrics:
-    st.subheader("2. Performance Metrics")
-
-    if st.session_state.model is not None:
-        model = st.session_state.model
-        y_pred = model.predict(X_test)
-        acc = accuracy_score(y_test, y_pred)
-
-        m1, m2, m3 = st.columns(3)
-        m1.metric("Accuracy", f"{acc * 100:.2f}%")
-        m2.metric("Total Samples", len(df))
-        m3.metric("Detected Threats", int(np.sum(y_pred)))
-
-        st.write("### Confusion Matrix")
-        cm = confusion_matrix(y_test, y_pred)
-
-        fig, ax = plt.subplots(figsize=(4, 3))
-        sns.heatmap(cm, annot=True, fmt="d", cmap="Reds", ax=ax)
-        ax.set_xlabel("Predicted")
-        ax.set_ylabel("Actual")
-        st.pyplot(fig)
-        plt.close(fig)
-
-    else:
-        st.warning("Train the model to view metrics")
-
-# -------------------------------
-# LIVE TRAFFIC SIMULATOR
-# -------------------------------
-st.divider()
-st.subheader("3. Live Traffic Simulator")
-
-c1, c2, c3, c4 = st.columns(4)
-
-p_dur = c1.number_input("Flow Duration (ms)", 0, 100000, 500)
-p_pkts = c2.number_input("Total Packets", 0, 500, 100)
-p_len = c3.number_input("Packet Length Mean", 0, 1500, 500)
-p_active = c4.number_input("Active Mean Time", 0, 1000, 50)
-
-if st.button("Analyze Packet"):
-    if st.session_state.model is None:
-        st.error("Please train the model first!")
-    else:
-        input_data = np.array([[
-            80,        # Destination_Port (fixed for simulation)
-            p_dur,
-            p_pkts,
-            p_len,
-            p_active
-        ]])
-
-        prediction = st.session_state.model.predict(input_data)
-
-        if prediction[0] == 1:
-            st.error("🚨 MALICIOUS TRAFFIC DETECTED")
-            st.write("**Reason:** High packet volume and abnormal flow duration.")
-        else:
-            st.success("✅ BENIGN TRAFFIC (Safe)")
-
-# -------------------------------
-# FOOTER
-# -------------------------------
-st.markdown("---")
-st.caption("AI-Based Network Intrusion Detection System | Streamlit + Random Forest")
+                        with st.spinner("Groq is analyzing the packet..."):
+                            completion = client.chat.completions.create(
+                                model="llama-3.3-70b-versatile",  # <--- UPDATED MODEL NAME
+                                messages=[
+                                    {"role": "user", "content": prompt}
+                                ],
+                                temperature=0.6,
+                            )
+                            st.info(completion.choices[0].message.content)
+                            
+                    except Exception as e:
+                        st.error(f"API Error: {e}")
+else:
+    st.info(" Waiting for model training. Click **'Train Model Now'** in the sidebar.")
