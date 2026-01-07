@@ -31,7 +31,7 @@ Welcome to the **AI_NIDS_Project**! This project leverages the power of Artifici
    ```bash
    pip install -r requirements.txt
    # or install manually:
-   pip install pandas numpy scikit-learn streamlit seaborn matplotlib
+   pip install pandas numpy scikit-learn streamlit groq
    ```
 3. **Run the Streamlit app:**
    ```bash
